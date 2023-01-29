@@ -1,0 +1,367 @@
+---
+title: "Applied Regression Analysis Project"
+author: "Marieke"
+date: "4/2/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install.packages("ggplot2")
+#install.packages("arm")
+#install.packages("rstanarm")
+#install.packages("BAS")
+#install.packages("bayesm")
+#install.packages("gt")
+library(bayesm)
+#(BAS)
+library("rstanarm")
+library("arm")
+library("ggplot2")
+#install.packages("gmodels")
+library("gmodels")
+#install.packages("expss")
+library("expss")
+```
+
+
+
+
+
+Let's simulate some data so we can analyze out of sample performance
+```{r simulate}
+set.seed(1234)
+x1=rnorm(100,50,9)
+x2=rnorm(100,200,40)
+error=rnorm(100,0,16)
+truecoeffs <- c(150,4,2.5)
+y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+x <- cbind(x1,x2)
+```
+
+
+Bayes Linear Regression 
+```{r}
+bayes.reg<-bayesglm(y1~x,family=gaussian(link=identity),,prior.df = Inf)
+bayes.reg.sum <- summary(bayes.reg)
+bias <- bayes.reg.sum$coefficients[,1] - truecoeffs
+SE <- bayes.reg.sum$coefficients[2]
+print(rbind(bias, SE))
+#con.int <- ci(fit.ols, confidence = 0.95, alpha=1 - .95)
+#con.int
+```
+
+OLS regression
+```{r pressure, echo=FALSE}
+fit.ols <- lm(y1~x1+x2)
+fit.ols.sum <- summary((fit.ols))
+bias<- abs((fit.ols$coefficients - truecoeffs))
+SE <- fit.ols.sum$coefficients[2]
+print(rbind(bias, SE))
+con.int <- ci(fit.ols, confidence = 0.95, alpha=1 - .95)
+```
+
+```{r}
+MAE<-function(actual, predicted){
+        mean(abs(actual-predicted))
+}
+MSE <- function(data, prediction){ 
+  mean((data-prediction)^2)
+}
+
+```
+
+
+```{r}
+niter <- 100
+nsamp <- 100
+x1=rnorm(nsamp,50,9)
+x2=rnorm(nsamp,200,40)
+error=rnorm(nsamp,0,16)
+truecoeffs <- c(150,4,2.5)
+y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+x <- cbind(x1,x2)
+n <- length(y1)
+mae <- rep(0, niter)
+mse <- rep(0,niter)
+maeb <- rep(0, niter)
+mseb <- rep(0,niter)
+bias <- matrix(nrow = niter, ncol = ncol(x)+1)
+biasb <- matrix(nrow = niter, ncol = ncol(x)+1)
+trainsplit <- n-(n/3)
+for (i in (1:niter)){
+  train = sample(1:n,trainsplit, replace = FALSE)
+  xtrain = x[train,]
+  ytrain = y1[train]
+  xtest = x[-train,]
+  ytest = y1[-train]
+  fit.ols.train <- lm(ytrain~xtrain)
+  bayes.reg.train <-bayesglm(ytrain~xtrain,family=gaussian(link=identity), prior.mean = c(3,2), prior.scale=1, prior.mean.for.intercept = 100, prior.scale.for.intercept =1, prior.df = Inf)
+  fit.ols.Test <-predict.lm(fit.ols.train,interval = 'prediction',se.fit = T)
+  fit.bayes.Test <- predict.glm(bayes.reg.train,newdata = as.data.frame(xtest),se.fit = T)
+  #cor[i] <- cor(fit.ols.Test$fit[,1], ytest)
+  bias[i] <- abs((fit.ols.train$coefficients - truecoeffs))
+  biasb[i] <- abs((bayes.reg.train$coefficients - truecoeffs))
+  mae[i] <- MAE(fit.ols.Test$fit[,1], ytest)
+  mse[i] <- MSE(ytest, fit.ols.Test$fit[,1])
+  maeb[i] <- MAE(fit.bayes.Test$fit, ytest)
+  mseb[i] <- MSE(ytest, fit.bayes.Test$fit)
+}
+```
+
+
+
+```{r}
+biastab <- matrix(colMeans(bias), colMeans(biasb), nrow = 2, ncol=3)
+rownames(biastab) <- c("Bias OLS", "Bias Bayes")
+colnames(biastab) <- c("Intercept", "X1 Coefficient", "X2 Coefficient")
+tab <- matrix(c( mean(mse), mean(mseb), mean(mae), mean(maeb)), ncol=4, byrow=TRUE)
+colnames(tab) <- (c('MSE', 'MSE Bayes','MAE OLS','MAE Bayes'))
+#rownames(tab) <- c()
+tab <- as.table(tab)
+biastab <- as.table(biastab)
+tab
+biastab
+
+```
+
+
+```{r}
+fitvals <- as.data.frame(cbind(ytest, fit.bayes.Test$fit))
+#bayes.upr <- fit.bayes.Test$fit + critval *  fit.bayes.Test$se.fit
+#bayes.lwr <-  fit.bayes.Test$fit - critval *  fit.bayes.Test$se.fit
+#p.bayes <- ggplot(fitvals, aes(x = ytest, y = fit.bayes.Test$fit)) + geom_point() + ggtitle("Bayesian Regression Credible Intervals") + labs(x = "Actual y value", y = "Predicted y value")
+#p.bayes + geom_errorbar(ymin = bayes.upr, ymax = bayes.lwr)
+
+A0 <- 0.0001*diag(2) #prior on coefficients variance
+nu0 <- 0 
+sigma0sq <- 0
+n.sims <- 1000
+Theta0 <- c(0,0) #prior mean on coefficients
+Data <- list(y=y1,X=x)
+Prior <- list(betabar=Theta0, A=A0, nu=nu0, ssq=sigma0sq)
+Mcmc <- list(R=n.sims, nprint =0)
+
+
+bayesian.reg <- runireg(Data, Prior, Mcmc)
+beta.sims <- t(bayesian.reg$betadraw) # transpose of bayesian.reg$betadraw
+sigmasq.sims <- bayesian.reg$sigmasqdraw
+bayesci <- apply(beta.sims, 1, quantile, probs = c(0.025, 0.975))
+estimates <- colMeans(bayesian.reg$betadraw)
+bayes.lwr <- bayesci[1,]
+bayes.upr <- bayesci[2,]
+B <- 1000+1 #burn in draws to discard 
+R <- 10000
+hist(bayesian.reg$betadraw[101:n.sims,1], breaks = 30, 
+     main = "Posterior Dist. of X1 Coef.", 
+     yaxt = "n", yaxs="i",
+     xlab = "", ylab = "", 
+     col = "blue", border = "gray")
+abline(v=bayesci[1,1], col="red")
+abline(v=bayesci[2,1], col="red")
+hist(bayesian.reg$betadraw[101:n.sims,2], breaks = 30, 
+     main = "Posterior Dist. of X2 Coef.", 
+     yaxt = "n", yaxs="i",
+     xlab = "", ylab = "", 
+     col = "blue", border = "gray")
+abline(v=bayesci[1,2], col="red", lwd= 5)
+abline(v=bayesci[2,2], col="red")
+#hist(bayesian.reg$sigmasqdraw[101:n.sims], breaks = 30, 
+#     main = "Posterior Dist. of Sigma2", 
+#     yaxt = "n", yaxs="i",
+#     xlab = "", ylab = "", 
+#     col = "darkred", border = "gray")
+
+bayesci
+```
+
+
+Simulation for Coverage Confidence Intervals vs. Bayesian Credible intervals for coefficients of the Linear model
+```{r}
+
+nsamp <-10000
+truecoeffs <- c(150,4,2.5)
+y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+x <- cbind(x1,x2)
+critval <- 1.96
+
+niter <- 10000
+cover <- coverb <- matrix(nrow = niter, ncol=length(truecoeffs))
+lengthb <- length <- matrix(nrow = niter, ncol=length(truecoeffs))
+bayes.upr <- bayes.lwr <- matrix(nrow = niter, ncol=length(truecoeffs))
+for (iter in 1:niter){
+  x1=rnorm(nsamp,50,9)
+  x2=rnorm(nsamp,200,40)
+  error=rnorm(nsamp,0,1)
+  truecoeffs <- c(150,4,2.5)
+  y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+  x <- cbind(x1,x2)
+  fit_ols <- lm(y1~ x1 + x2)
+  fit_ols_sum <- summary(fit_ols)
+  u <- fit_ols_sum$coefficients[,1] + critval *  fit_ols_sum$coefficients[,2]
+  l <- fit_ols_sum$coefficients[,1] - critval *  fit_ols_sum$coefficients[,2]
+  cover[iter,] <- as.numeric(truecoeffs >= l & truecoeffs <= u)
+  fit.bayes.reg <-bayesglm(y1~x1 + x2,family=gaussian(link=identity),prior.mean = c(4,2.5),prior.scale=10, prior.mean.for.intercept =150 , prior.scale.for.intercept =10, prior.df = Inf) # the default prior on the betas is 0 mean and 
+  simcoef <- coef(sim(fit.bayes.reg))
+  bayesciint <- quantile(simcoef[,1], c(.025,.975))
+  bayescix1 <- quantile(simcoef[,2], c(.025,.975))
+  bayescix2 <- quantile(simcoef[,3], c(.025,.975))
+  bayesci <- rbind(bayesciint, bayescix1,bayescix2)
+  bayes.upr[iter, ] <- bayesci[,2]
+  bayes.lwr[iter, ] <-  bayesci[,1]
+  coverb[iter,] <- as.integer(truecoeffs > bayes.lwr[iter,] & truecoeffs < bayes.upr[iter,])
+  lengthb[iter, ] <- bayes.upr[iter,] -bayes.lwr[iter,] 
+  length[iter, ] <- u -l
+}
+colMeans(cover)
+colMeans(coverb)
+colMeans(length)
+colMeans(lengthb)
+
+```
+
+
+
+What if we have tiny n our prior on the coefficients is student t 
+```{r}
+
+nsamp <-10
+y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+x <- cbind(x1,x2)
+critval <- 1.96
+
+niter <- 10000
+cover <- coverb <- matrix(nrow = niter, ncol=length(truecoeffs))
+lengthb <- matrix(nrow = niter, ncol=length(truecoeffs))
+length <- matrix(nrow = niter, ncol=length(truecoeffs))
+
+for (iter in 1:niter){
+  x1=rnorm(100,50,9)
+  x2=rnorm(100,200,40)
+  error=rnorm(100,0,1)
+  truecoeffs <- c(150,4,2.5)
+  y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+  x <- cbind(x1,x2)
+  fit_ols <- lm(y1~ x1 + x2)
+  fit_ols_sum <- summary(fit_ols)
+  u <- fit_ols_sum$coefficients[,1] + critval *  fit_ols_sum$coefficients[,2]
+  l <- fit_ols_sum$coefficients[,1] - critval *  fit_ols_sum$coefficients[,2]
+  cover[iter,] <- as.numeric(truecoeffs > l & truecoeffs < u)
+  fit.bayes.reg <- bayesglm(y1~x,family=gaussian(link = "identity"),prior.mean = c(3,2), prior.scale=1, prior.mean.for.intercept = 150, prior.scale.for.intercept =1,prior.df = Inf)
+  bayes.sum <- summary(fit.bayes.reg)
+  simcoef <- coef(sim(fit.bayes.reg))
+  bayesciint <- quantile(simcoef[,1], c(.025,.975))
+  bayescix1 <- quantile(simcoef[,2], c(.025,.975))
+  bayescix2 <- quantile(simcoef[,3], c(.025,.975))
+  bayesci <- rbind(bayesciint, bayescix1,bayescix2)
+  bayes.upr <- bayesci[,2]
+  bayes.lwr <-  bayesci[,1]
+  coverb[iter,] <- as.integer(truecoeffs > bayes.lwr & truecoeffs < bayes.upr)	
+  lengthb[iter, ] <- bayes.upr -bayes.lwr 
+  length[iter, ] <- u -l
+}
+colMeans(cover)
+colMeans(coverb)
+colMeans(length)
+colMeans(lengthb)
+```
+Uniformative Prior
+
+```{r}
+critval <- 1.96
+
+niter <- 10000
+cover <- coverb <- matrix(nrow = niter, ncol=length(truecoeffs))
+lengthb <- matrix(nrow = niter, ncol=length(truecoeffs))
+length <- matrix(nrow = niter, ncol=length(truecoeffs))
+
+nsamp <- 100
+
+for (iter in 1:niter){
+  x1=rnorm(nsamp,50,9)
+  x2=rnorm(nsamp,200,40)
+  error=rnorm(nsamp,0,1)
+  truecoeffs <- c(0,4,2.5)
+  y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+  x <- cbind(x1,x2)
+  fit_ols <- lm(y1~ x1 + x2)
+  fit_ols_sum <- summary(fit_ols)
+  u <- fit_ols_sum$coefficients[,1] + critval *  fit_ols_sum$coefficients[,2]
+  l <- fit_ols_sum$coefficients[,1] - critval *  fit_ols_sum$coefficients[,2]
+  cover[iter,] <- as.numeric(truecoeffs > l & truecoeffs < u)
+  fit.bayes.reg <- bayesglm(y1~x,family=gaussian(link = "identity"),prior.mean = c(0,0), prior.scale=100, prior.mean.for.intercept = 0, prior.scale.for.intercept =100, prior.df = Inf)
+  bayes.sum <- summary(fit.bayes.reg)
+  simcoef <- coef(sim(fit.bayes.reg))
+  bayesciint <- quantile(simcoef[,1], c(.025,.975))
+  bayescix1 <- quantile(simcoef[,2], c(.025,.975))
+  bayescix2 <- quantile(simcoef[,3], c(.025,.975))
+  bayesci <- rbind(bayesciint, bayescix1,bayescix2)
+  bayes.upr <- bayesci[,2]
+  bayes.lwr <-  bayesci[,1]
+  coverb[iter,] <- as.integer(truecoeffs > bayes.lwr & truecoeffs < bayes.upr)
+  lengthb[iter, ] <- bayes.upr -bayes.lwr 
+  length[iter, ] <- u -l
+}
+colMeans(cover)
+colMeans(coverb)
+colMeans(length)
+colMeans(lengthb)
+
+```
+
+What if we have mis-informative prior? 
+
+```{r}
+
+nsamp <-100
+truecoeffs <- c(150,4,2.5)
+y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+x <- cbind(x1,x2)
+critval <- 1.96
+
+niter <- 10000
+cover <- coverb <- matrix(nrow = niter, ncol=length(truecoeffs))
+
+for (iter in 1:niter){
+  x1=rnorm(100,50,9)
+  x2=rnorm(100,200,40)
+  error=rnorm(100,0,1)
+  truecoeffs <- c(150,4,2.5)
+  y1=truecoeffs[1]+(truecoeffs[2]*x1)+(truecoeffs[3]*x2)+error
+  x <- cbind(x1,x2)
+  fit_ols <- lm(y1~ x1 + x2)
+  fit_ols_sum <- summary(fit_ols)
+  u <- fit_ols_sum$coefficients[,1] + critval *  fit_ols_sum$coefficients[,2]
+  l <- fit_ols_sum$coefficients[,1] - critval *  fit_ols_sum$coefficients[,2]
+  cover[iter,] <- as.numeric(truecoeffs > l & truecoeffs < u)
+  fit.bayes.reg <- bayesglm(y1~x,family=gaussian(link=identity),prior.mean = c(100,200), prior.scale=1, prior.mean.for.intercept = 0, prior.scale,for.intercept =1, prior.df = 1) #fix to be uniform
+  bayes.sum <- summary(fit.bayes.reg)
+  simcoef <- coef(sim(fit.bayes.reg))
+  bayesciint <- quantile(simcoef[,1], c(.025,.975))
+  bayescix1 <- quantile(simcoef[,2], c(.025,.975))
+  bayescix2 <- quantile(simcoef[,3], c(.025,.975))
+  bayesci <- rbind(bayesciint, bayescix1,bayescix2)
+  bayes.upr <- bayesci[,2]
+  bayes.lwr <-  bayesci[,1]
+  coverb[iter,] <- as.integer(truecoeffs > bayes.lwr & truecoeffs < bayes.upr)	
+  lengthb[iter, ] <- bayes.upr -bayes.lwr 
+  length[iter, ] <- u -l
+}
+colMeans(cover)
+colMeans(coverb)
+colMeans(length)
+colMeans(lengthb)
+
+```
+
+
+
+
+
+
+
+
+
